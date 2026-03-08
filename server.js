@@ -1,75 +1,85 @@
 const express = require("express")
 const axios = require("axios")
+const protobuf = require("protobufjs")
 const NodeCache = require("node-cache")
-const cors = require("cors")
-const morgan = require("morgan")
 
 const app = express()
-
-// =============================
-// CONFIG
-// =============================
-
-const PORT = 3000
 const cache = new NodeCache({ stdTTL: 600 })
 
-// region server FF
-const REGIONS = {
-  vn: "https://clientbp.ggblueshark.com/GetPlayerPersonalShow",
-  sg: "https://clientbp.ggblueshark.com/GetPlayerPersonalShow",
-  ind: "https://clientind.ggblueshark.com/GetPlayerPersonalShow",
-  br: "https://clientbr.ggblueshark.com/GetPlayerPersonalShow"
-}
+let PlayerInfo
 
-// =============================
-// MIDDLEWARE
-// =============================
-
-app.use(cors())
-app.use(morgan("dev"))
-
-// =============================
-// HOME
-// =============================
-
-app.get("/", (req, res) => {
-  res.json({
-    name: "Free Fire UID API",
-    status: "running",
-    endpoint: "/api/ffinfo?uid=UID&region=vn"
-  })
+// load protobuf
+protobuf.load("player.proto").then(root => {
+  PlayerInfo = root.lookupType("PlayerInfo")
 })
 
-// =============================
-// API CHECK UID
-// =============================
+async function getPlayerInfo(uid){
 
-app.get("/api/ffinfo", async (req, res) => {
+  const response = await axios.post(
+    "https://clientbp.ggblueshark.com/GetPlayerPersonalShow",
+    Buffer.from(uid.toString()),
+    {
+      responseType: "arraybuffer",
+      headers:{
+        "User-Agent":"Dalvik/2.1.0 (Linux; Android 10; FreeFire)",
+        "Content-Type":"application/octet-stream"
+      }
+    }
+  )
+
+  const decoded = PlayerInfo.decode(new Uint8Array(response.data))
+
+  return {
+    uid: decoded.uid,
+    nickname: decoded.nickname,
+    level: decoded.level,
+    likes: decoded.likes,
+    rank: decoded.rank,
+    guild: decoded.guild
+  }
+
+}
+
+app.get("/api/ff", async (req,res)=>{
 
   const uid = req.query.uid
-  const region = req.query.region || "vn"
 
-  if (!uid) {
+  if(!uid){
+    return res.json({status:false,message:"Missing UID"})
+  }
+
+  const cacheData = cache.get(uid)
+
+  if(cacheData){
     return res.json({
-      status: false,
-      message: "Missing UID"
+      source:"cache",
+      data:cacheData
     })
   }
 
-  const cacheKey = `${uid}_${region}`
-  const cached = cache.get(cacheKey)
+  try{
 
-  if (cached) {
-    return res.json({
-      source: "cache",
-      data: cached
+    const data = await getPlayerInfo(uid)
+
+    cache.set(uid,data)
+
+    res.json({
+      source:"live",
+      data:data
     })
+
+  }catch(e){
+
+    res.json({
+      status:false,
+      error:"Decode failed"
+    })
+
   }
 
-  try {
+})
 
-    const url = REGIONS[region]
-
+app.listen(3000,()=>console.log("FF API running"))
     const response = await axios.post(url, {
       uid: uid
     })
